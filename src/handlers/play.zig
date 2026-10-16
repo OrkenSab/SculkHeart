@@ -4,35 +4,18 @@ const packet = @import("../protocol/packet.zig");
 const server = @import("../net/server.zig");
 const chunk = @import("../world/chunk.zig");
 
-pub fn getLoginPacketId(proto: i32) i32 {
-    return if (proto == 769) 0x2C else 0x30;
-}
-
-pub fn getGameEventPacketId(proto: i32) i32 {
-    return if (proto == 769) 0x23 else 0x26;
-}
-
-pub fn getChunkPacketId(proto: i32) i32 {
-    return if (proto == 769) 0x28 else 0x2C;
-}
-
-pub fn getPlayerPositionPacketId(proto: i32) i32 {
-    return if (proto == 769) 0x42 else 0x46;
-}
-
-pub fn getKeepAlivePacketId(proto: i32) i32 {
-    return if (proto == 769) 0x27 else 0x2B;
-}
+pub const PACKET_ID_LOGIN_PLAY: i32 = 0x30;
+pub const PACKET_ID_GAME_EVENT: i32 = 0x26;
+pub const PACKET_ID_CHUNK_DATA: i32 = 0x2C;
+pub const PACKET_ID_PLAYER_POSITION: i32 = 0x46;
+pub const PACKET_ID_KEEP_ALIVE: i32 = 0x2B;
 
 /// Инициализация игрока в мире: отправка Login (play), Game Event 13, чанка (0, 0) и координат
 pub fn startPlay(client: *server.Client) !void {
     client.last_keep_alive_ack = std.time.milliTimestamp();
-    const proto = client.protocol_version;
-
     // 1. Отправка пакета Login (play)
     {
-        const login_id = getLoginPacketId(proto);
-        var pw = packet.PacketWriter.init(client.arena.allocator(), login_id);
+        var pw = packet.PacketWriter.init(client.arena.allocator(), PACKET_ID_LOGIN_PLAY);
 
         try pw.writeI32(1); // Entity ID: 1
         try pw.writeBool(false); // isHardcore: false
@@ -77,8 +60,7 @@ pub fn startPlay(client: *server.Client) !void {
 
     // 2. Отправка Game Event (13 = Start waiting for chunks, 0.0f)
     {
-        const game_event_id = getGameEventPacketId(proto);
-        var pw = packet.PacketWriter.init(client.arena.allocator(), game_event_id);
+        var pw = packet.PacketWriter.init(client.arena.allocator(), PACKET_ID_GAME_EVENT);
         try pw.writeU8(13); // Event: 13
         try pw.writeF32(0.0); // Value: 0.0f
         try client.sendPacket(&pw);
@@ -106,8 +88,7 @@ pub fn startPlay(client: *server.Client) !void {
 
     // 5. Отправка сетки плоских чанков согласно радиусу R
     {
-        const chunk_id = getChunkPacketId(proto);
-        var template = try chunk.ChunkGenerator.buildChunkPacket(client.arena.allocator(), chunk_id, 0, 0);
+        var template = try chunk.ChunkGenerator.buildChunkPacket(client.arena.allocator(), PACKET_ID_CHUNK_DATA, 0, 0);
 
         var count: i32 = 0;
         var cx: i32 = -R;
@@ -128,8 +109,7 @@ pub fn startPlay(client: *server.Client) !void {
     }
     // 4. Синхронизация позиции игрока (Телепортация на блок травы)
     {
-        const pos_id = getPlayerPositionPacketId(proto);
-        var pw = packet.PacketWriter.init(client.arena.allocator(), pos_id);
+        var pw = packet.PacketWriter.init(client.arena.allocator(), PACKET_ID_PLAYER_POSITION);
 
         client.teleport_id = 1;
         try pw.writeVarInt(client.teleport_id);
@@ -157,7 +137,7 @@ pub fn startPlay(client: *server.Client) !void {
 
 /// Отправка Keep Alive клиенту
 pub fn sendKeepAlive(client: *server.Client) !void {
-    const keep_alive_id = getKeepAlivePacketId(client.protocol_version);
+    const keep_alive_id = PACKET_ID_KEEP_ALIVE;
     const ts = std.time.milliTimestamp();
     client.keep_alive_id = ts;
 
