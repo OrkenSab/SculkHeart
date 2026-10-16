@@ -108,10 +108,9 @@ pub const ChunkGenerator = struct {
         try pw.writeI32(chunk_x);
         try pw.writeI32(chunk_z);
 
-        // 2. Heightmaps (анонимный тег NBT Compound)
-        var heightmaps = try buildHeightmapsNbt(allocator);
-        defer heightmaps.deinit(allocator);
-        try pw.writeNbt(heightmaps);
+        // 2. Heightmaps (в Minecraft 1.21.5+ / 1.21.11 протокол 774 это Map<VarInt, long[]>)
+        // Передаем VarInt 0 (размер Map = 0), клиент вычисляет карты высот самостоятельно
+        try pw.writeVarInt(0);
 
         // 3. Chunk Data (с префиксом длины VarInt)
         const chunk_data = try buildChunkData(allocator);
@@ -167,15 +166,17 @@ test "Генерация плоского чанка и проверка стр�
 
     try std.testing.expect(pw.buffer.items.len > data.len);
 
-    // Проверяем, что в начале пакета записан валидный NBT Compound
+    // Проверяем, что в начале пакета записан VarInt 0 (пустой Map карт высот)
     // Смещение: 4 байта ChunkX + 4 байта ChunkZ = 8
     var fbs = std.io.fixedBufferStream(pw.buffer.items[8..]);
-    var parsed_nbt = try nbt.parseAnonymous(fbs.reader(), std.testing.allocator);
-    defer parsed_nbt.deinit(std.testing.allocator);
+    const heightmap_map_size = try types.readVarInt(fbs.reader());
+    try std.testing.expectEqual(@as(i32, 0), heightmap_map_size);
 
-    // Должны присутствовать массивы MOTION_BLOCKING и WORLD_SURFACE
-    const mb = parsed_nbt.get("MOTION_BLOCKING").?;
+    // Проверяем генерацию NBT карт высот отдельно
+    var heightmaps = try ChunkGenerator.buildHeightmapsNbt(std.testing.allocator);
+    defer heightmaps.deinit(std.testing.allocator);
+    const mb = heightmaps.get("MOTION_BLOCKING").?;
     try std.testing.expectEqual(@as(usize, 37), mb.long_array.len);
-    const ws = parsed_nbt.get("WORLD_SURFACE").?;
+    const ws = heightmaps.get("WORLD_SURFACE").?;
     try std.testing.expectEqual(@as(usize, 37), ws.long_array.len);
 }

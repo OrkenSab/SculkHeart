@@ -277,7 +277,9 @@ def test_online_encrypted_mode():
     mock_thread.daemon = True
     mock_thread.start()
 
-    online_cfg_path = "server_test_online.toml"
+    server_cwd = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    server_bin = os.path.join(server_cwd, "zig-out", "bin", "server")
+    online_cfg_path = os.path.join(server_cwd, "server_test_online.toml")
     online_toml = f"""[server]
 port = 3225
 host = "127.0.0.1"
@@ -295,9 +297,6 @@ gamemode = "creative"
 """
     with open(online_cfg_path, "w", encoding="utf-8") as f:
         f.write(online_toml)
-
-    server_bin = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "zig-out", "bin", "server"))
-    server_cwd = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
     server_proc = subprocess.Popen(
         [server_bin, "--config", online_cfg_path],
         cwd=server_cwd,
@@ -378,7 +377,9 @@ def test_compression_mode():
     print("[ТЕСТ 3] Режим компрессии пакетов: Set Compression (ID 0x03) -> Zlib сжатие (порог 256)")
     print("=" * 60)
 
-    comp_cfg_path = "server_test_compression.toml"
+    server_cwd = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    server_bin = os.path.join(server_cwd, "zig-out", "bin", "server")
+    comp_cfg_path = os.path.join(server_cwd, "server_test_compression.toml")
     comp_toml = """[server]
 port = 3226
 host = "127.0.0.1"
@@ -396,9 +397,6 @@ gamemode = "creative"
 """
     with open(comp_cfg_path, "w", encoding="utf-8") as f:
         f.write(comp_toml)
-
-    server_bin = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "zig-out", "bin", "server"))
-    server_cwd = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
     server_proc = subprocess.Popen(
         [server_bin, "--config", comp_cfg_path],
         cwd=server_cwd,
