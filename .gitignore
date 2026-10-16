@@ -1,0 +1,15 @@
+# Ключи шифрования и сертификаты
+*.pem
+*.der
+*.key
+server_rsa*
+test_rsa*
+
+# Кэш сборки и бинарные файлы Zig
+zig-cache/
+zig-out/
+.zig-cache/
+
+# Временные файлы тестов
+test_*.toml
+*_tmp.*
