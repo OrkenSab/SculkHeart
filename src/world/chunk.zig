@@ -27,10 +27,10 @@ pub const ChunkGenerator = struct {
 
             // Длина палитры: 4 записи
             try types.writeVarInt(w, 4);
-            try types.writeVarInt(w, 0); // 0: воздух
-            try types.writeVarInt(w, 85); // 1: бедрок
-            try types.writeVarInt(w, 10); // 2: земля
-            try types.writeVarInt(w, 9); // 3: блок травы
+            try types.writeVarInt(w, 0); // 0: воздух (minecraft:air = 0)
+            try types.writeVarInt(w, 79); // 1: бедрок (minecraft:bedrock = 79 в 1.21.11)
+            try types.writeVarInt(w, 10); // 2: земля (minecraft:dirt = 10)
+            try types.writeVarInt(w, 9); // 3: блок травы (minecraft:grass_block = 9)
 
 
             // Слой y=0 (бедрок -> индекс палитры 1): 16 longs
@@ -84,10 +84,12 @@ pub const ChunkGenerator = struct {
         // Массив из 37 longs (256 элементов по 9 бит, упакованных в 64-битные числа)
         const heightmap_longs = try allocator.alloc(i64, 37);
         errdefer allocator.free(heightmap_longs);
-        const packed_pattern: i64 = @bitCast(@as(u64, 0x0140a05028140a05));
-        for (heightmap_longs) |*l| {
-            l.* = packed_pattern;
+        // Первые 36 longs упаковывают по 7 значений (36 * 7 = 252 элемента)
+        for (heightmap_longs[0..36]) |*l| {
+            l.* = @bitCast(@as(u64, 0x0140a05028140a05));
         }
+        // 37-й long упаковывает оставшиеся 4 элемента (256 - 252 = 4)
+        heightmap_longs[36] = @bitCast(@as(u64, 0x0000000028140a05));
         try root.put(allocator, "MOTION_BLOCKING", nbt.Tag{ .long_array = heightmap_longs });
 
         const surface_longs = try allocator.dupe(i64, heightmap_longs);

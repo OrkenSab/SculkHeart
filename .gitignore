@@ -13,6 +13,8 @@ zig-out/
 .zig-cache/
 
 # Временные файлы тестов и конфигов
+__pycache__/
+*.pyc
 test_*.toml
 *_tmp.*
 tmp_*

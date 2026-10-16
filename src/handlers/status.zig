@@ -20,10 +20,10 @@ pub fn handleHandshake(client: *server.Client, pkt: *const packet.Packet) !void 
     const proto_ver = try types.readVarInt(r);
     client.protocol_version = proto_ver;
 
-    // Читаем адрес сервера (до 255 символов)
-    const host = try types.readString(r, client.arena.allocator(), 255);
-    _ = host;
-
+    // Пропускаем адрес сервера (до 255 байт) без бесполезной аллокации памяти
+    const host_len_i32 = try types.readVarInt(r);
+    if (host_len_i32 < 0 or host_len_i32 > 255) return types.ProtocolError.StringTooLong;
+    try r.skipBytes(@as(usize, @intCast(host_len_i32)), .{});
     // Читаем порт сервера (u16)
     const port = try r.readInt(u16, .big);
     _ = port;
@@ -58,49 +58,23 @@ pub fn handleHandshake(client: *server.Client, pkt: *const packet.Packet) !void 
 pub fn handleStatus(client: *server.Client, pkt: *const packet.Packet) !void {
     switch (pkt.id) {
         0x00 => {
-            // Экранирование спецсимволов MOTD для валидного JSON
-            var escaped_motd: [2048]u8 = undefined;
-            var esc_idx: usize = 0;
+            // Экранирование спецсимволов MOTD для валидного JSON без лимита и без усечения
+            var escaped_motd = std.ArrayList(u8).init(client.arena.allocator());
             for (client.server_config.motd) |c| {
-                if (esc_idx + 2 >= escaped_motd.len) break;
                 switch (c) {
-                    '"' => {
-                        escaped_motd[esc_idx] = '\\';
-                        escaped_motd[esc_idx + 1] = '"';
-                        esc_idx += 2;
-                    },
-                    '\\' => {
-                        escaped_motd[esc_idx] = '\\';
-                        escaped_motd[esc_idx + 1] = '\\';
-                        esc_idx += 2;
-                    },
-                    '\n' => {
-                        escaped_motd[esc_idx] = '\\';
-                        escaped_motd[esc_idx + 1] = 'n';
-                        esc_idx += 2;
-                    },
-                    '\r' => {
-                        escaped_motd[esc_idx] = '\\';
-                        escaped_motd[esc_idx + 1] = 'r';
-                        esc_idx += 2;
-                    },
-                    '\t' => {
-                        escaped_motd[esc_idx] = '\\';
-                        escaped_motd[esc_idx + 1] = 't';
-                        esc_idx += 2;
-                    },
-                    else => {
-                        escaped_motd[esc_idx] = c;
-                        esc_idx += 1;
-                    },
+                    '"' => try escaped_motd.appendSlice("\\\""),
+                    '\\' => try escaped_motd.appendSlice("\\\\"),
+                    '\n' => try escaped_motd.appendSlice("\\n"),
+                    '\r' => try escaped_motd.appendSlice("\\r"),
+                    '\t' => try escaped_motd.appendSlice("\\t"),
+                    else => try escaped_motd.append(c),
                 }
             }
-            const safe_motd = escaped_motd[0..esc_idx];
 
             var json_buf: [4096]u8 = undefined;
             const motd_json = try std.fmt.bufPrint(&json_buf,
                 \\{{"version":{{"name":"{s}","protocol":{d}}},"players":{{"max":{d},"online":0,"sample":[]}},"description":{{"text":"{s}"}}}}
-            , .{ VERSION_NAME, PROTOCOL_VERSION, client.server_config.max_players, safe_motd });
+            , .{ VERSION_NAME, PROTOCOL_VERSION, client.server_config.max_players, escaped_motd.items });
 
             var pw = packet.PacketWriter.init(client.arena.allocator(), 0x00);
             try pw.writeString(motd_json);

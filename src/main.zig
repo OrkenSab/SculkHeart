@@ -15,6 +15,15 @@ pub const crypto = @import("crypto/crypto.zig");
 test {
     std.testing.refAllDecls(@This());
 }
+var global_srv_running: ?*std.atomic.Value(bool) = null;
+
+fn handleSignal(sig: c_int) callconv(.C) void {
+    _ = sig;
+    if (global_srv_running) |running| {
+        running.store(false, .seq_cst);
+    }
+}
+
 
 fn handleClient(client: *server.Client) !void {
     const reader = client.reader();
@@ -133,6 +142,14 @@ pub fn main() !void {
     var srv = try server.Server.init(allocator, cfg);
     defer srv.deinit();
 
+    global_srv_running = &srv.running;
+    const act = std.posix.Sigaction{
+        .handler = .{ .handler = handleSignal },
+        .mask = std.posix.empty_sigset,
+        .flags = 0,
+    };
+    std.posix.sigaction(std.posix.SIG.INT, &act, null) catch {};
+    std.posix.sigaction(std.posix.SIG.TERM, &act, null) catch {};
     const elapsed_ns = std.time.nanoTimestamp() - start_time;
     const elapsed_ms = @as(f64, @floatFromInt(elapsed_ns)) / 1_000_000.0;
 
@@ -150,6 +167,7 @@ pub fn main() !void {
     while (srv.running.load(.seq_cst)) {
         const conn = srv.net_server.accept() catch |err| {
             if (!srv.running.load(.seq_cst)) break;
+            if (err == error.Interrupted) continue;
             std.debug.print("[СЕТЬ] Ошибка при приеме соединения: {any}\n", .{err});
             continue;
         };
@@ -181,4 +199,5 @@ pub fn main() !void {
         };
         thread.detach();
     }
+    std.debug.print("[СЕРВЕР] Завершение работы сервера (SIGINT/SIGTERM). Все ресурсы освобождены.\n", .{});
 }

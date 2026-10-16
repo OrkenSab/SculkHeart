@@ -10,7 +10,7 @@ pub const RsaKeyPair = struct {
         self.allocator.free(self.public_key_der);
     }
 
-    /// Чистое нативное дешифрование RSA-2048 PKCS#1 v1.5 в памяти процесса (БЕЗ запуска внешних процессов)
+    /// Чистое нативное дешифрование RSA-2048 PKCS#1 v1.5 в памяти процесса (0 дочерних процессов)
     pub fn decrypt(self: *const RsaKeyPair, allocator: std.mem.Allocator, ciphertext: []const u8) ![]u8 {
         if (ciphertext.len != 256) {
             return error.InvalidCiphertextLength;
@@ -51,7 +51,7 @@ pub const RsaKeyPair = struct {
         return try allocator.dupe(u8, payload);
     }
 
-    /// Чистое нативное шифрование открытым ключом RSA-2048 PKCS#1 v1.5 (e=65537)
+    /// Чистое нативное шифрование открытым ключом RSA-2048 PKCS#1 v1.5 (e=65537) с криптографическим рандомом в PS
     pub fn encryptPkcs1v15(self: *const RsaKeyPair, allocator: std.mem.Allocator, message: []const u8) ![256]u8 {
         if (message.len > 256 - 11) return error.MessageTooLong;
 
@@ -59,8 +59,14 @@ pub const RsaKeyPair = struct {
         block[0] = 0x00;
         block[1] = 0x02;
         const ps_len = 256 - 3 - message.len;
+
+        // По стандарту RFC 2313 (PKCS#1 v1.5 type 2) padding bytes PS обязаны быть псевдослучайными и ненулевыми
         for (block[2 .. 2 + ps_len]) |*b| {
-            b.* = 0x55; // Заполнение ненулевыми байтами
+            var r: u8 = 0;
+            while (r == 0) {
+                r = std.crypto.random.int(u8);
+            }
+            b.* = r;
         }
         block[2 + ps_len] = 0x00;
         @memcpy(block[3 + ps_len ..], message);
@@ -87,24 +93,28 @@ pub const RsaKeyPair = struct {
     }
 };
 
+fn readAsn1Length(data: []const u8, offset: *usize) !usize {
+    if (offset.* >= data.len) return error.InvalidAsn1;
+    const b = data[offset.*];
+    offset.* += 1;
+    if ((b & 0x80) == 0) {
+        return b;
+    }
+    const num_bytes = b & 0x7F;
+    if (num_bytes == 0 or num_bytes > 4 or offset.* + num_bytes > data.len) return error.InvalidAsn1;
+    var len: usize = 0;
+    var i: usize = 0;
+    while (i < num_bytes) : (i += 1) {
+        len = (len << 8) | data[offset.*];
+        offset.* += 1;
+    }
+    return len;
+}
+
 fn readAsn1Integer(data: []const u8, offset: *usize) ![]const u8 {
     if (offset.* >= data.len or data[offset.*] != 0x02) return error.InvalidAsn1;
     offset.* += 1;
-
-    var len: usize = 0;
-    if ((data[offset.*] & 0x80) == 0) {
-        len = data[offset.*];
-        offset.* += 1;
-    } else {
-        const num_bytes = data[offset.*] & 0x7F;
-        offset.* += 1;
-        var i: usize = 0;
-        while (i < num_bytes) : (i += 1) {
-            len = (len << 8) | data[offset.*];
-            offset.* += 1;
-        }
-    }
-
+    const len = try readAsn1Length(data, offset);
     if (offset.* + len > data.len) return error.InvalidAsn1;
     var slice = data[offset.* .. offset.* + len];
     offset.* += len;
@@ -113,6 +123,41 @@ fn readAsn1Integer(data: []const u8, offset: *usize) ![]const u8 {
         slice = slice[1..];
     }
     return slice;
+}
+
+/// Корректный разбор ASN.1 DER структуры закрытого ключа (поддержка PKCS#1 и PKCS#8)
+fn parseRsaPrivateKey(der: []const u8) !struct { n: []const u8, d: []const u8 } {
+    if (der.len < 4 or der[0] != 0x30) return error.InvalidAsn1;
+    var offset: usize = 1;
+    _ = try readAsn1Length(der, &offset);
+
+    if (offset >= der.len) return error.InvalidAsn1;
+    if (der[offset] != 0x02) return error.InvalidAsn1; // INTEGER (version)
+    _ = try readAsn1Integer(der, &offset); // version
+
+    if (offset >= der.len) return error.InvalidAsn1;
+    if (der[offset] == 0x02) {
+        // PKCS#1 RSAPrivateKey: следующий элемент INTEGER (modulus)
+        const n = try readAsn1Integer(der, &offset);
+        _ = try readAsn1Integer(der, &offset); // e
+        const d = try readAsn1Integer(der, &offset);
+        return .{ .n = n, .d = d };
+    } else if (der[offset] == 0x30) {
+        // PKCS#8 PrivateKeyInfo: AlgorithmIdentifier (SEQUENCE)
+        offset += 1;
+        const alg_len = try readAsn1Length(der, &offset);
+        offset += alg_len;
+
+        // OCTET STRING (0x04)
+        if (offset >= der.len or der[offset] != 0x04) return error.InvalidAsn1;
+        offset += 1;
+        _ = try readAsn1Length(der, &offset);
+
+        // Рекурсивно разбираем вложенный PKCS#1 SEQUENCE
+        return try parseRsaPrivateKey(der[offset..]);
+    } else {
+        return error.InvalidAsn1;
+    }
 }
 
 fn setBigEndianBytes(num: *std.math.big.int.Managed, bytes: []const u8) !void {
@@ -195,7 +240,6 @@ pub fn initOrLoadRsaKeys(allocator: std.mem.Allocator, priv_path_in: []const u8,
     if (!priv_exists or !pub_exists) {
         std.debug.print("[ШИФРОВАНИЕ] Генерация новой ключевой пары RSA-2048 с правами 0600...\n", .{});
 
-        // Временный PEM для конвертации в PKCS#1 DER
         const tmp_pem = "tmp_rsa_gen.pem";
         defer cwd.deleteFile(tmp_pem) catch {};
 
@@ -215,8 +259,16 @@ pub fn initOrLoadRsaKeys(allocator: std.mem.Allocator, priv_path_in: []const u8,
         }, allocator);
         gen_child.stderr_behavior = .Ignore;
         gen_child.stdout_behavior = .Ignore;
-        try gen_child.spawn();
-        _ = try gen_child.wait();
+        gen_child.spawn() catch |err| {
+            cwd.deleteFile(priv_path) catch {};
+            std.debug.print("[ШИФРОВАНИЕ] Ошибка запуска openssl genpkey: {any}\n", .{err});
+            return err;
+        };
+        const gen_term = try gen_child.wait();
+        if (gen_term != .Exited or gen_term.Exited != 0) {
+            cwd.deleteFile(priv_path) catch {};
+            return error.KeyGenerationFailed;
+        }
 
         // Конвертируем в традиционный PKCS#1 DER
         var der_child = std.process.Child.init(&[_][]const u8{
@@ -232,8 +284,15 @@ pub fn initOrLoadRsaKeys(allocator: std.mem.Allocator, priv_path_in: []const u8,
         }, allocator);
         der_child.stderr_behavior = .Ignore;
         der_child.stdout_behavior = .Ignore;
-        try der_child.spawn();
-        _ = try der_child.wait();
+        der_child.spawn() catch |err| {
+            cwd.deleteFile(priv_path) catch {};
+            return err;
+        };
+        const der_term = try der_child.wait();
+        if (der_term != .Exited or der_term.Exited != 0) {
+            cwd.deleteFile(priv_path) catch {};
+            return error.KeyGenerationFailed;
+        }
 
         // Устанавливаем права 0600
         const fd = try std.posix.open(priv_path, .{ .ACCMODE = .RDWR }, 0);
@@ -254,42 +313,40 @@ pub fn initOrLoadRsaKeys(allocator: std.mem.Allocator, priv_path_in: []const u8,
         }, allocator);
         pub_child.stderr_behavior = .Ignore;
         pub_child.stdout_behavior = .Ignore;
-        try pub_child.spawn();
-        _ = try pub_child.wait();
+        pub_child.spawn() catch |err| {
+            cwd.deleteFile(priv_path) catch {};
+            cwd.deleteFile(pub_path) catch {};
+            return err;
+        };
+        const pub_term = try pub_child.wait();
+        if (pub_term != .Exited or pub_term.Exited != 0) {
+            cwd.deleteFile(priv_path) catch {};
+            cwd.deleteFile(pub_path) catch {};
+            return error.KeyGenerationFailed;
+        }
 
         std.debug.print("[ШИФРОВАНИЕ] Ключи RSA-2048 сгенерированы: '{s}' (0600), '{s}'.\n", .{ priv_path, pub_path });
     }
 
-    // Читаем PKCS#1 DER закрытого ключа
+    // Читаем DER закрытого ключа
     const priv_file = try cwd.openFile(priv_path, .{});
     defer priv_file.close();
     var der_buf: [4096]u8 = undefined;
     const der_len = try priv_file.readAll(&der_buf);
     const priv_der = der_buf[0..der_len];
 
-    // Парсим ASN.1 структуру PKCS#1: SEQUENCE { version, n, e, d, ... }
-    var offset: usize = 2;
-    if (priv_der.len > 1 and priv_der[1] == 0x82) {
-        offset = 4;
-    } else if (priv_der.len > 1 and priv_der[1] == 0x81) {
-        offset = 3;
-    }
+    // Парсим ASN.1 структуру (PKCS#1 или PKCS#8)
+    const key_parts = try parseRsaPrivateKey(priv_der);
 
-    _ = try readAsn1Integer(priv_der, &offset); // version
-    const n_slice = try readAsn1Integer(priv_der, &offset);
-    _ = try readAsn1Integer(priv_der, &offset); // e
-    const d_slice = try readAsn1Integer(priv_der, &offset);
-
-    if (n_slice.len != 256 or d_slice.len != 256) {
+    if (key_parts.n.len > 256 or key_parts.d.len > 256 or key_parts.n.len < 250 or key_parts.d.len < 250) {
         return error.InvalidKeySize;
     }
 
-    var mod_bytes: [256]u8 = undefined;
-    @memcpy(&mod_bytes, n_slice);
+    var mod_bytes = [_]u8{0} ** 256;
+    @memcpy(mod_bytes[256 - key_parts.n.len ..], key_parts.n);
 
-    var exp_bytes: [256]u8 = undefined;
-    @memcpy(&exp_bytes, d_slice);
-
+    var exp_bytes = [_]u8{0} ** 256;
+    @memcpy(exp_bytes[256 - key_parts.d.len ..], key_parts.d);
     // Читаем публичный ключ DER
     const pub_file = try cwd.openFile(pub_path, .{});
     defer pub_file.close();

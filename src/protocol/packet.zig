@@ -159,6 +159,9 @@ pub fn readPacketCompressed(reader: anytype, allocator: std.mem.Allocator, max_p
 
     if (threshold >= 0) {
         const data_len_i32 = try types.readVarInt(reader);
+        if (data_len_i32 < 0 or @as(usize, @intCast(data_len_i32)) > max_packet_size) {
+            return types.ProtocolError.InvalidPacketLength;
+        }
         const data_len_size = types.varIntSize(data_len_i32);
         if (data_len_size > packet_len) return types.ProtocolError.InvalidPacketLength;
         const remaining_len = packet_len - data_len_size;
@@ -192,6 +195,10 @@ pub fn readPacketCompressed(reader: anytype, allocator: std.mem.Allocator, max_p
                 if (n == 0) break;
                 read_idx += n;
             }
+            if (read_idx != @as(usize, @intCast(data_len_i32))) {
+                return types.ProtocolError.InvalidPacketLength;
+            }
+
 
             var decomp_fbs = std.io.fixedBufferStream(decompressed_buf);
             const packet_id = try types.readVarInt(decomp_fbs.reader());
@@ -302,4 +309,24 @@ test "Сжатие пакетов zlib и порядок слоев: encrypt(com
 
     try std.testing.expectEqual(@as(i32, 0x30), recv_packet.id);
     try std.testing.expectEqualSlices(u8, &sample_chunk_data, recv_packet.payload);
+}
+
+test "Защита от decompression bomb (аномальный uncompressed data_length)" {
+    const allocator = std.testing.allocator;
+
+    // Формируем пакет с заявленной длиной распакованных данных 2 ГБ
+    var bomb_buf = std.ArrayList(u8).init(allocator);
+    defer bomb_buf.deinit();
+
+    // Total Packet Length: VarInt (10)
+    try types.writeVarInt(bomb_buf.writer(), 10);
+    // Data Length: 2 000 000 000 (> max_packet_size 65536)
+    try types.writeVarInt(bomb_buf.writer(), 2_000_000_000);
+    // Заглушка сжатых данных
+    try bomb_buf.writer().writeAll(&[_]u8{ 1, 2, 3, 4, 5 });
+
+    var fbs = std.io.fixedBufferStream(bomb_buf.items);
+    // Должно вернуть InvalidPacketLength без аллокации 2 ГБ и падения по OOM
+    const res = readPacketCompressed(fbs.reader(), allocator, 65536, 256);
+    try std.testing.expectError(types.ProtocolError.InvalidPacketLength, res);
 }

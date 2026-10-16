@@ -296,11 +296,13 @@ gamemode = "creative"
     with open(online_cfg_path, "w", encoding="utf-8") as f:
         f.write(online_toml)
 
+    server_bin = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "zig-out", "bin", "server"))
+    server_cwd = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
     server_proc = subprocess.Popen(
-        ["./zig-out/bin/server", "--config", online_cfg_path],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
+        [server_bin, "--config", online_cfg_path],
+        cwd=server_cwd,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
     )
     time.sleep(0.5)
 
@@ -365,7 +367,7 @@ gamemode = "creative"
 
         print("[ТЕСТ 2 УСПЕШНО ЗАВЕРШЕН] Online-Mode с шифрованием AES-128-CFB8 проверен на 100%.\n")
     finally:
-        server_proc.terminate()
+        server_proc.kill()
         server_proc.wait()
         httpd.shutdown()
         if os.path.exists(online_cfg_path):
@@ -395,11 +397,13 @@ gamemode = "creative"
     with open(comp_cfg_path, "w", encoding="utf-8") as f:
         f.write(comp_toml)
 
+    server_bin = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "zig-out", "bin", "server"))
+    server_cwd = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
     server_proc = subprocess.Popen(
-        ["./zig-out/bin/server", "--config", comp_cfg_path],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
+        [server_bin, "--config", comp_cfg_path],
+        cwd=server_cwd,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
     )
     time.sleep(0.5)
 
@@ -438,7 +442,7 @@ gamemode = "creative"
         s.close()
         print("[ТЕСТ 3 УСПЕШНО ЗАВЕРШЕН] Компрессия Zlib и Set Compression проверены на 100%.\n")
     finally:
-        server_proc.terminate()
+        server_proc.kill()
         server_proc.wait()
         if os.path.exists(comp_cfg_path):
             os.remove(comp_cfg_path)
