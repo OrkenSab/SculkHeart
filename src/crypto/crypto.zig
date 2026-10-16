@@ -9,7 +9,6 @@ pub const computeMinecraftHash = sha1.computeMinecraftHash;
 pub const formatMinecraftDigest = sha1.formatMinecraftDigest;
 pub const RsaKeyPair = rsa.RsaKeyPair;
 pub const initOrLoadRsaKeys = rsa.initOrLoadRsaKeys;
-pub const encryptWithPubDer = rsa.encryptWithPubDer;
 
 test {
     std.testing.refAllDecls(@This());

@@ -466,8 +466,37 @@ def test_version_gate():
     s.close()
     print("[ТЕСТ 4 УСПЕШНО ЗАВЕРШЕН] Версионный гейт работает корректно.\n")
 
+def test_username_validation():
+    print("\n" + "=" * 60)
+    print("[ТЕСТ 5] Валидация никнейма: отклонение пустых и некорректных имен")
+    print("=" * 60)
+
+    for invalid_name in ["", "Hi", "User@Name!", "Name With Spaces", "Toolongplayername1234"]:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(5.0)
+        s.connect(("127.0.0.1", 3222))
+
+        # Handshake
+        host_bytes = "localhost".encode("utf-8")
+        handshake_payload = write_varint(774) + write_varint(len(host_bytes)) + host_bytes + struct.pack(">H", 3222) + write_varint(2)
+        send_packet(s, 0x00, handshake_payload)
+
+        # Login Start with invalid name
+        name_bytes = invalid_name.encode("utf-8")
+        login_start_payload = write_varint(len(name_bytes)) + name_bytes + (b"\x00" * 16)
+        send_packet(s, 0x00, login_start_payload)
+
+        pkt_id, payload = read_packet(s, -1)
+        assert pkt_id == 0x00, f"Имя '{invalid_name}' должно было отклониться 0x00 Disconnect, но получен 0x{pkt_id:X}"
+        reason, _ = read_string(payload, 0)
+        print(f"  [OK] Некорректное имя '{invalid_name}' успешно отклонено: {reason}")
+        s.close()
+
+    print("[ТЕСТ 5 УСПЕШНО ЗАВЕРШЕН] Валидация никнейма работает на 100%.\n")
+
 if __name__ == "__main__":
     test_offline_mode()
     test_online_encrypted_mode()
     test_compression_mode()
     test_version_gate()
+    test_username_validation()

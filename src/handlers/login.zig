@@ -131,9 +131,25 @@ pub fn handleLogin(client: *server.Client, pkt: *const packet.Packet) !void {
             var stream = pkt.reader();
             const r = stream.reader();
 
-            const username = try types.readString(r, client.arena.allocator(), 16);
-            client.setUsername(username);
+            const username = types.readString(r, client.arena.allocator(), 16) catch {
+                try sendLoginDisconnect(client, "Некорректный формат имени игрока");
+                return;
+            };
 
+            // Валидация имени игрока Minecraft: длина 3..16 и только символы [A-Za-z0-9_]
+            if (username.len < 3 or username.len > 16) {
+                std.debug.print("[АВТОРИЗАЦИЯ] Отклонен вход: недопустимая длина имени '{s}' ({d} симв.)\n", .{ username, username.len });
+                try sendLoginDisconnect(client, "Длина имени игрока должна быть от 3 до 16 символов");
+                return;
+            }
+            for (username) |c| {
+                if (!std.ascii.isAlphanumeric(c) and c != '_') {
+                    std.debug.print("[АВТОРИЗАЦИЯ] Отклонен вход: недопустимый символ '{c}' в имени '{s}'\n", .{ c, username });
+                    try sendLoginDisconnect(client, "Недопустимые символы в имени (разрешены только латиница, цифры и '_')");
+                    return;
+                }
+            }
+            client.setUsername(username);
             var uuid: [16]u8 = undefined;
             const read_bytes = try r.readAll(&uuid);
             if (read_bytes < 16 or std.mem.allEqual(u8, &uuid, 0)) {
@@ -300,7 +316,13 @@ test "Online-Mode: полный цикл рукопожатия шифрован
     const allocator = std.testing.allocator;
 
     // 1. Инициализируем нативную ключевую пару RSA-2048
-    var rsa_keys = try crypto.initOrLoadRsaKeys(allocator, "", "");
+    const test_key_path = "test_login_rsa.key";
+    const test_der_path = "test_login_rsa.der";
+    defer {
+        std.fs.cwd().deleteFile(test_key_path) catch {};
+        std.fs.cwd().deleteFile(test_der_path) catch {};
+    }
+    var rsa_keys = try crypto.initOrLoadRsaKeys(allocator, test_key_path, test_der_path);
     defer rsa_keys.deinit();
     // 2. Запускаем локальный мок-сервер авторизации Mojang
     var srv_addr = try std.net.Address.parseIp4("127.0.0.1", 0);
@@ -374,19 +396,17 @@ test "Online-Mode: полный цикл рукопожатия шифрован
 
     // 6. Клиент генерирует 16 байт shared_secret и шифрует с помощью RSA
     const client_shared_secret = [16]u8{ 10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130, 140, 150, 160 };
-    // Нативное шифрование client_shared_secret и recvd_token
-    const encrypted_secret = try crypto.encryptWithPubDer(allocator, pub_key_bytes, &client_shared_secret);
-    defer allocator.free(encrypted_secret);
-    const encrypted_token = try crypto.encryptWithPubDer(allocator, pub_key_bytes, &recvd_token);
-    defer allocator.free(encrypted_token);
+    // 6. Клиент генерирует 16 байт shared_secret и шифрует чистым нативным методом
+    const encrypted_secret = try rsa_keys.encryptPkcs1v15(allocator, &client_shared_secret);
+    const encrypted_token = try rsa_keys.encryptPkcs1v15(allocator, &recvd_token);
 
     // 7. Формируем пакет Encryption Response (ID 0x01)
     var resp_pw = packet.PacketWriter.init(allocator, 0x01);
     defer resp_pw.deinit();
     try resp_pw.writeVarInt(@as(i32, @intCast(encrypted_secret.len)));
-    try resp_pw.writeBytes(encrypted_secret);
+    try resp_pw.writeBytes(&encrypted_secret);
     try resp_pw.writeVarInt(@as(i32, @intCast(encrypted_token.len)));
-    try resp_pw.writeBytes(encrypted_token);
+    try resp_pw.writeBytes(&encrypted_token);
 
     const resp_pkt = packet.Packet{
         .id = 0x01,
@@ -431,4 +451,35 @@ test "Online-Mode: полный цикл рукопожатия шифрован
     const ack_pkt = packet.Packet{ .id = 0x03, .payload = &[_]u8{} };
     try handleLogin(&c, &ack_pkt);
     try std.testing.expectEqual(server.ConnectionState.configuration, c.state);
+}
+
+test "Валидация имени игрока: отклонение пустых и некорректных ников" {
+    const dummy_addr = try std.net.Address.parseIp4("127.0.0.1", 3222);
+    const pipe_fds = try std.posix.pipe();
+    defer std.posix.close(pipe_fds[0]);
+    defer std.posix.close(pipe_fds[1]);
+
+    var c = server.Client.init(.{ .handle = pipe_fds[1] }, dummy_addr, std.testing.allocator);
+    c.state = .login;
+    defer c.arena.deinit();
+
+    // 1. Пустое имя "" -> должно отклоняться
+    var fbs_buf: [64]u8 = undefined;
+    var fbs = std.io.fixedBufferStream(&fbs_buf);
+    try types.writeString(fbs.writer(), ""); // длина 0
+    try fbs.writer().writeAll(&std.mem.zeroes([16]u8));
+
+    const pkt_empty = packet.Packet{ .id = 0x00, .payload = fbs.getWritten() };
+    try handleLogin(&c, &pkt_empty);
+    try std.testing.expectEqual(server.ConnectionState.disconnected, c.state);
+
+    // 2. Имя с недопустимыми спецсимволами "User@Name!"
+    c.state = .login;
+    fbs.reset();
+    try types.writeString(fbs.writer(), "User@Name!");
+    try fbs.writer().writeAll(&std.mem.zeroes([16]u8));
+
+    const pkt_invalid = packet.Packet{ .id = 0x00, .payload = fbs.getWritten() };
+    try handleLogin(&c, &pkt_invalid);
+    try std.testing.expectEqual(server.ConnectionState.disconnected, c.state);
 }

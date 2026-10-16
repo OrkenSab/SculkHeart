@@ -131,7 +131,7 @@ pub const Server = struct {
 
         var rsa: ?crypto.RsaKeyPair = null;
         if (cfg.online_mode) {
-            rsa = try crypto.initOrLoadRsaKeys(allocator, "server_rsa_priv.pem", "server_rsa.der");
+            rsa = try crypto.initOrLoadRsaKeys(allocator, "server_rsa.key", "server_rsa.der");
         }
 
         return Server{
