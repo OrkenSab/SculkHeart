@@ -1,43 +1,119 @@
-# Высокопроизводительный сервер Minecraft на Zig (1.21.11, Протокол 774)
+<p align="center">
+  <img src="assets/logo-heart.png" width="400" alt="SculkHeart logo">
+</p>
 
-Нативное, легковесное серверное ядро Minecraft Java Edition версии **1.21.11** (Protocol 774), написанное на языке **Zig** с мгновенным холодным запуском (< 1 мс), выделенным портом **3222** и генератором плоского мира (Flat World).
+<h1 align="center">SculkHeart</h1>
 
-## Архитектура и особенности
+<p align="center">
+  Minecraft Java server in Zig. 1.21.11, flat world, no JVM.
+</p>
 
-- **Сверхбыстрый старт**: сокет инициализируется и готов принимать подключения за **< 0.1 мс** (измерено через `--benchmark-start`).
-- **Сетевая оптимизация**: принудительный флаг `TCP_NODELAY` для отключения буферизации алгоритма Нейгла, что минимизирует задержки сетевых пакетов Minecraft.
-- **Управление памятью**: использование `std.heap.ArenaAllocator` на соединение со сбросом после обработки каждого пакета — отсутствие фрагментации и утечек памяти.
-- **Поддержка протокола 1.21.11 (Protocol 774)**:
-  - **Handshaking**: маршрутизация в Status и Login.
-  - **Status (Server List Ping)**: JSON MOTD с русскоязычным описанием сервера, счетчиком игроков и Ping/Pong.
-  - **Login**: офлайн-авторизация, генерация v3 UUID, `Login Success` (ID `0x02`), `Login Acknowledged` (ID `0x03`).
-  - **Configuration (1.20.2+)**: синхронизация датапаков (`Select Known Packs`), передача синхронизируемых реестров (`dimension_type`, `biome`, `damage_type`, `painting_variant`, `banner_pattern`), `Update Tags`, `Finish Configuration`.
-  - **Play**: отправка `Login (play)` (ID `0x32`), `Game Event 13` (ожидание чанков), генерация плоского чанка (бедрок, 3 слоя земли, блок травы), спавн игрока в Creative (`X=0.5, Y=-59.0, Z=0.5`), Keep Alive таймер (раз в 10 секунд).
+<p align="center">
+  <img src="https://img.shields.io/badge/zig-0.13-orange" alt="zig">
+  <img src="https://img.shields.io/badge/minecraft-1.21.11-green" alt="minecraft">
+  <img src="https://img.shields.io/badge/protocol-774-blue" alt="protocol">
+  <img src="https://img.shields.io/badge/license-MIT-lightgrey" alt="license">
+</p>
 
-## Сборка и запуск
+## What this is
 
-Сборка с использованием RAM-диска (`tmpfs`) для исключения нагрузки на HDD:
+SculkHeart is a from-scratch Minecraft Java Edition server written in Zig. No Java, single binary, plain TCP + thread per client.
+
+Current state: you can ping it, log in (offline or Mojang auth), walk around a flat world and stay connected. That is it. No chat, no commands, no inventory, no mobs. See Roadmap below.
+
+## Status
+
+| Area | State |
+|---|---|
+| Status ping, MOTD | works |
+| Login offline (UUID v3) | works |
+| Login online (RSA-2048, AES-CFB8, Mojang session) | works |
+| Configuration (known packs, 19 registries, tags, finish) | works |
+| Play (login, chunks, teleport, keep-alive) | works, flat 13x13 only |
+| Packet compression (zlib) | wired, off by default |
+| Chat, commands | not started |
+| Inventory, blocks, entities | not started |
+| World save (Anvil) | not started |
+
+Version gate is strict: only 1.21.11 (protocol 774) gets past handshake.
+
+## Quick start
+
+Requires Zig 0.13 and Python 3 (for integration tests only).
 
 ```bash
-# Сборка ReleaseFast
-zig build -Doptimize=ReleaseFast --cache-dir /tmp/zig-cache --global-cache-dir /tmp/zig-global-cache
-
-# Бенчмарк холодного старта
-./zig-out/bin/server --benchmark-start
-
-# Обычный запуск сервера (порт 3222)
+zig build -Doptimize=ReleaseFast
 ./zig-out/bin/server
 ```
 
-## Тестирование
+The server listens on `0.0.0.0:3222`. First run creates `server.toml` with defaults.
+
+Cold start check:
 
 ```bash
-# Юнит-тесты протокола и генератора мира
-zig test src/main.zig --cache-dir /tmp/zig-cache --global-cache-dir /tmp/zig-global-cache
+./zig-out/bin/server --benchmark-start
+# Server started on 0.0.0.0:3222 in 0.21 ms
+```
 
-# Интеграционный тест Server List Ping
+## Config
+
+`server.toml` is created on first run. The fields:
+
+```toml
+[server]
+port = 3222
+host = "0.0.0.0"
+online_mode = false
+max_players = 20
+motd = "SculkHeart 1.21.11"
+view_distance = 8
+
+[world]
+spawn_x = 0.5
+spawn_y = -59.0
+spawn_z = 0.5
+gamemode = "creative"
+```
+
+Invalid values fall back to defaults with a warning in the log. `online_mode = true` enables Mojang auth and generates `server_rsa.key` (0600) next to the binary. The key is gitignored, do not commit it.
+
+## Tests
+
+```bash
+zig build test
 python3 tests/test_ping.py
-
-# Сквозной headless-клиент тест (Handshake -> Login -> Configuration -> Play -> KeepAlive)
 python3 tests/test_e2e_client.py
 ```
+
+`test_ping.py` covers Server List Ping. `test_e2e_client.py` runs two full logins against a live server: offline on 3222 and online (mock Mojang) on 3225, through configuration into play including keep-alive.
+
+## Layout
+
+```
+src/
+  main.zig          accept loop, per-client threads
+  net/server.zig    Client, connection state, send path
+  protocol/         VarInt/String/UUID, PacketWriter, zlib
+  handlers/         status, login, configuration, play
+  world/chunk.zig   flat chunk builder, heightmaps
+  nbt/              tag tree, parser, serializer, SNBT
+  crypto/           RSA-2048, CFB8, Mojang hash
+  config/           TOML subset parser, validation
+tests/              ping + headless client
+```
+
+NBT exists as a general library but chunk building still writes most section data by hand. That is next to clean up.
+
+## Roadmap
+
+1. Chat + `/stop`, `/gamemode`, `/tp`
+2. Block place/break + inventory basics
+3. Health, hunger, respawn
+4. Anvil save/load, `level.dat`
+5. Real terrain (noise) behind a flag
+6. Redstone, fluids
+7. Plugin API (after the core stops changing)
+
+## License
+
+MIT, see `LICENSE`.
